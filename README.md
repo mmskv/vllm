@@ -1,4 +1,8 @@
 <!-- markdownlint-disable MD001 MD041 -->
+
+> **📄 M.Sc. thesis fork — _Tiered Sleep for Multi-Model LLM Inference on GPUs_.**
+> This fork adds an **NVMe SSD sleep tier** to vLLM's sleep-mode allocator.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vllm-project/vllm/main/docs/assets/logos/vllm-logo-text-dark.png">
@@ -41,7 +45,7 @@ vLLM is fast with:
 vLLM is flexible and easy to use with:
 
 - Seamless integration with popular Hugging Face models
-- High-throughput serving with various decoding algorithms, including *parallel sampling*, *beam search*, and more
+- High-throughput serving with various decoding algorithms, including _parallel sampling_, _beam search_, and more
 - Tensor, pipeline, data, expert, and context parallelism for distributed inference
 - Streaming outputs
 - Generation of structured outputs using xgrammar or guidance

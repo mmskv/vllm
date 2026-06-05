@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal, TypeVar, overload
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.distributed.kv_transfer.kv_connector.utils import KVOutputAggregator
 from vllm.distributed.kv_transfer.kv_connector.v1.base import (
     KVConnectorHandshakeMetadata,
@@ -319,12 +320,14 @@ class Executor(ABC):
         """Reset the encoder cache in each worker to clear cached encoder outputs."""
         self.collective_rpc("reset_encoder_cache")
 
-    def sleep(self, level: int = 1):
+    def sleep(self, level: int = 1, storage_tier: StorageTierName = "ram"):
         if self.is_sleeping:
             logger.warning("Executor is already sleeping.")
             return
         time_before_sleep = time.perf_counter()
-        self.collective_rpc("sleep", kwargs=dict(level=level))
+        self.collective_rpc(
+            "sleep", kwargs=dict(level=level, storage_tier=storage_tier)
+        )
         time_after_sleep = time.perf_counter()
         self.sleeping_tags = {"weights", "kv_cache"}
         self.is_sleeping = True

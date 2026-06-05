@@ -64,6 +64,7 @@ from vllm.v1.engine import (
     UtilityOutput,
     UtilityResult,
 )
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.v1.engine.tensor_ipc import TensorIpcReceiver
 from vllm.v1.engine.utils import (
     EngineHandshakeMetadata,
@@ -670,7 +671,12 @@ class EngineCore:
         """Return whether the scheduler is in any pause state."""
         return self.scheduler.pause_state != PauseState.UNPAUSED
 
-    def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None | Future:
+    def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None | Future:
         """Put the engine to sleep at the specified level.
 
         Args:
@@ -679,10 +685,10 @@ class EngineCore:
                            but not processed. No GPU memory changes.
                 - Level 1: Offload model weights to CPU, discard KV cache.
                 - Level 2: Discard all GPU memory.
+            storage_tier: Where to stage offloaded weights at level 1.
             mode: Pause mode - how to deal with any existing requests, see
                 documentation of pause_scheduler method.
         """
-
         # Pause scheduler before sleeping.
         clear_prefix_cache = level >= 1
         pause_future = self.pause_scheduler(mode=mode, clear_cache=clear_prefix_cache)
@@ -692,7 +698,7 @@ class EngineCore:
         # Level 1+: Delegate to executor for GPU memory management
         model_executor = self.model_executor
         if pause_future is None:
-            model_executor.sleep(level)
+            model_executor.sleep(level, storage_tier)
             return None
 
         future = Future[Any]()
@@ -700,7 +706,7 @@ class EngineCore:
         def pause_complete(f: Future):
             try:
                 f.result()  # propagate any exception
-                future.set_result(model_executor.sleep(level))
+                future.set_result(model_executor.sleep(level, storage_tier))
             except Exception as e:
                 future.set_exception(e)
 

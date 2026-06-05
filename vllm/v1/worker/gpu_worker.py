@@ -17,6 +17,7 @@ import torch.nn as nn
 import vllm.envs as envs
 from vllm.config import CUDAGraphMode, VllmConfig, set_current_vllm_config
 from vllm.config.compilation import CompilationMode
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.distributed import (
     ensure_model_parallel_initialized,
     init_distributed_environment,
@@ -154,7 +155,7 @@ class Worker(WorkerBase):
         # pending non-blocking PP send work from the previous iteration
         self._pp_send_work: list[Handle] = []
 
-    def sleep(self, level: int = 1) -> None:
+    def sleep(self, level: int = 1, storage_tier: StorageTierName = "ram") -> None:
         from vllm.device_allocator.cumem import CuMemAllocator
 
         free_bytes_before_sleep = torch.cuda.mem_get_info()[0]
@@ -167,7 +168,10 @@ class Worker(WorkerBase):
             }
 
         allocator = CuMemAllocator.get_instance()
-        allocator.sleep(offload_tags=("weights",) if level == 1 else tuple())
+        allocator.sleep(
+            offload_tags=("weights",) if level == 1 else tuple(),
+            storage_tier=storage_tier,
+        )
         free_bytes_after_sleep, total = torch.cuda.mem_get_info()
         freed_bytes = free_bytes_after_sleep - free_bytes_before_sleep
         used_bytes = total - free_bytes_after_sleep

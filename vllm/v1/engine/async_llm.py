@@ -37,6 +37,7 @@ from vllm.transformers_utils.config import maybe_register_config_serialize_by_va
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils.async_utils import cancel_task_threadsafe
 from vllm.utils.collection_utils import as_list
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.v1.engine import EngineCoreRequest, PauseMode
 from vllm.v1.engine.core_client import EngineCoreClient
 from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
@@ -899,8 +900,13 @@ class AsyncLLM(EngineClient):
     async def reset_encoder_cache(self) -> None:
         await self.engine_core.reset_encoder_cache_async()
 
-    async def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
-        await self.engine_core.sleep_async(level, mode)
+    async def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None:
+        await self.engine_core.sleep_async(level, storage_tier, mode)
 
         if self.logger_manager is not None:
             self.logger_manager.record_sleep_state(1, level)

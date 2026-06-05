@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import dataclasses
+import gc
+import os
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+
 # cumem-based pytorch pluggable allocator to implement sleep mode.
 # other approaches tried but failed:
 # - cuda-python package binding
@@ -8,17 +14,16 @@
 # both of them failed because of cuda context mismatch.
 # not sure why, they are created from a different context.
 # the only successful approach is to call cuda driver API in C.
-import dataclasses
-import gc
-import os
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from typing import Any
 
 import torch
 
+from vllm.device_allocator.storage_tiers.base import (
+    BaseStorageTier,
+    StorageTierName,
+    make_storage_tier,
+)
 from vllm.logger import init_logger
-from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.utils.system_utils import find_loaded_library
 
 logger = init_logger(__name__)
@@ -52,15 +57,29 @@ HandleType = tuple[int, int, int, int]
 class AllocationData:
     handle: HandleType
     tag: str
-    cpu_backup_tensor: torch.Tensor | None = None
-
-
-def create_and_map(allocation_handle: HandleType) -> None:
-    python_create_and_map(*allocation_handle)
 
 
 def unmap_and_release(allocation_handle: HandleType) -> None:
+    """Full cuMemUnmap + cuMemRelease + cuMemAddressFree.
+
+    Frees the physical HBM and tears down the VA reservation so the
+    device can hand the memory to a different process or engine. This
+    is the only sleep-side primitive in this fork: every sleeping
+    allocation is fully released so multi-engine deployments can pack
+    multiple engines onto a single GPU without each one holding
+    util×HBM across the sleep cycle.
+    """
     python_unmap_and_release(*allocation_handle)
+
+
+def create_and_map(allocation_handle: HandleType) -> None:
+    """Wake-side counterpart of unmap_and_release.
+
+    Allocates fresh physical memory via cuMemCreate and binds it via
+    cuMemMap + cuMemSetAccess. NVMe (and RAM) wakes pay this cost on
+    every cycle in exchange for a sleeping floor of 0 GiB.
+    """
+    python_create_and_map(*allocation_handle)
 
 
 def get_pluggable_allocator(
@@ -114,6 +133,7 @@ class CuMemAllocator:
 
     instance: "CuMemAllocator | None" = None
     default_tag: str = "default"
+    storage_tier: "BaseStorageTier | None" = None
 
     @staticmethod
     def get_instance() -> "CuMemAllocator":
@@ -145,6 +165,7 @@ class CuMemAllocator:
         self.pointer_to_data[py_d_mem] = AllocationData(
             allocation_handle, self.current_tag
         )
+
         logger.debug(
             "Allocated %s bytes for %s with address %s from cumem allocator",
             allocation_handle[1],
@@ -158,8 +179,10 @@ class CuMemAllocator:
         Internal method to look up the allocation data
         when memory is freed in the memory pool."""
         data = self.pointer_to_data.pop(ptr)
-        if data.cpu_backup_tensor is not None:
-            data.cpu_backup_tensor = None
+
+        if self.storage_tier:
+            self.storage_tier.free(ptr)
+
         logger.debug(
             "Freed %s bytes for %s with address %s from cumem allocator",
             data.handle[1],
@@ -168,23 +191,42 @@ class CuMemAllocator:
         )
         return data.handle
 
-    def sleep(self, offload_tags: tuple[str, ...] | str | None = None) -> None:
+    def sleep(
+        self,
+        offload_tags: tuple[str, ...] | str | None = None,
+        storage_tier: StorageTierName = "ram",
+        model_id: str | None = None,
+        fingerprint: str | None = None,
+    ) -> None:
         """
         Put the allocator in sleep mode.
         All data in the memory allocation with the specified tag will be
-        offloaded to CPU memory, and others will be discarded.
+        offloaded to the chosen storage tier, and others will be discarded.
 
         :param offload_tags: The tags of the memory allocation that will be
             offloaded. The rest of the memory allocation will be discarded.
+        :param storage_tier: Destination tier for offloaded allocations.
+            Defaults to "ram" (pinned CPU tensor) which matches upstream
+            behaviour.
+        :param model_id: Optional opaque identifier for the model being
+            offloaded. Tiers with a write-once cache (e.g. NVMe) use this
+            together with `fingerprint` to skip the offload write when a
+            valid prior copy is already present.
+        :param fingerprint: Optional version identifier (e.g. fork git
+            HEAD or vllm.__version__) that invalidates the cache when the
+            codebase changes. Both `model_id` and `fingerprint` must be
+            supplied for the cache to engage.
         """
         if offload_tags is None:
-            # by default, allocated tensors are offloaded
-            # when the allocator sleeps
             offload_tags = (CuMemAllocator.default_tag,)
         elif isinstance(offload_tags, str):
             offload_tags = (offload_tags,)
 
         assert isinstance(offload_tags, tuple)
+
+        # init storage_tier instance
+        self.storage_tier = make_storage_tier(storage_tier)
+        self.storage_tier.begin_sleep(model_id, fingerprint)
 
         total_bytes = 0
         backup_bytes = 0
@@ -195,30 +237,34 @@ class CuMemAllocator:
             if data.tag in offload_tags:
                 backup_bytes += handle[1]
                 size_in_bytes = handle[1]
-                cpu_backup_tensor = torch.empty(
-                    size_in_bytes,
-                    dtype=torch.uint8,
-                    device="cpu",
-                    pin_memory=is_pin_memory_available(),
-                )
-                cpu_ptr = cpu_backup_tensor.data_ptr()
-                libcudart.cudaMemcpy(cpu_ptr, ptr, size_in_bytes)
-                data.cpu_backup_tensor = cpu_backup_tensor
+                # offload() records layout for every tensor; the
+                # NVMe tier may skip the actual write on cache hit.
+                self.storage_tier.offload(ptr, size_in_bytes)
+
             unmap_and_release(handle)
+
+        self.storage_tier.end_sleep()
 
         logger.info(
             "CuMemAllocator: sleep freed %.2f GiB memory in total, of which "
-            "%.2f GiB is backed up in CPU and the rest %.2f GiB is discarded "
+            "%.2f GiB is backed up to %s and the rest %.2f GiB is discarded "
             "directly.",
             total_bytes / 1024**3,
             backup_bytes / 1024**3,
+            storage_tier,
             (total_bytes - backup_bytes) / 1024**3,
         )
 
         gc.collect()
         torch.cuda.empty_cache()
 
-    def wake_up(self, tags: list[str] | None = None) -> None:
+    def wake_up(
+        self,
+        tags: list[str] | None = None,
+        # Accepted and ignored — see sleep().
+        model_id: str | None = None,
+        fingerprint: str | None = None,
+    ) -> None:
         """
         Wake up the allocator from sleep mode.
         All data that is previously offloaded will be loaded back to GPU
@@ -228,19 +274,16 @@ class CuMemAllocator:
             back to GPU memory. If None, all memory allocation will be loaded
             back to GPU memory.
         """
+        del model_id, fingerprint
+        if not self.storage_tier:
+            return
+
+        self.storage_tier.begin_wake()
         for ptr, data in self.pointer_to_data.items():
             if tags is None or data.tag in tags:
-                handle = data.handle
-                create_and_map(handle)
-                if data.cpu_backup_tensor is not None:
-                    cpu_backup_tensor = data.cpu_backup_tensor
-                    if cpu_backup_tensor is not None:
-                        size_in_bytes = (
-                            cpu_backup_tensor.numel() * cpu_backup_tensor.element_size()
-                        )
-                        cpu_ptr = cpu_backup_tensor.data_ptr()
-                        libcudart.cudaMemcpy(ptr, cpu_ptr, size_in_bytes)
-                        data.cpu_backup_tensor = None
+                create_and_map(data.handle)
+                self.storage_tier.load(ptr)
+        self.storage_tier.end_wake()
 
     @contextmanager
     def use_memory_pool(self, tag: str | None = None):

@@ -34,9 +34,8 @@ from vllm.config.model import (
     RunnerOption,
     TokenizerMode,
 )
-from vllm.config.quantization import (
-    OnlineQuantizationConfigArgs,
-)
+from vllm.config.quantization import OnlineQuantizationConfigArgs
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.distributed.weight_transfer.base import (
     WeightTransferInitRequest,
     WeightTransferUpdateRequest,
@@ -53,13 +52,7 @@ from vllm.entrypoints.pooling.scoring.io_processor import ScoringIOProcessor
 from vllm.entrypoints.pooling.scoring.typing import ScoreInput
 from vllm.entrypoints.pooling.typing import OfflineInputsContext, OfflineOutputsContext
 from vllm.entrypoints.utils import log_non_default_args
-from vllm.inputs import (
-    DataPrompt,
-    EngineInput,
-    PromptType,
-    TextPrompt,
-    TokensPrompt,
-)
+from vllm.inputs import DataPrompt, EngineInput, PromptType, TextPrompt, TokensPrompt
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.quantization import QuantizationMethods
@@ -1489,7 +1482,12 @@ class LLM:
             reset_running_requests, reset_connector
         )
 
-    def sleep(self, level: int = 1, mode: PauseMode = "abort"):
+    def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ):
         """
         Put the engine to sleep. The engine should not process any requests.
         The caller should guarantee that no requests are being processed
@@ -1512,7 +1510,7 @@ class LLM:
             mode: How to handle any existing requests, can be "abort", "wait",
                 or "keep".
         """
-        self.llm_engine.sleep(level=level, mode=mode)
+        self.llm_engine.sleep(level=level, storage_tier=storage_tier, mode=mode)
 
     def wake_up(self, tags: list[str] | None = None):
         """

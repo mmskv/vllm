@@ -11,6 +11,7 @@ from typing_extensions import TypeVar
 
 import vllm.envs as envs
 from vllm.config import ParallelConfig, VllmConfig
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.distributed import stateless_destroy_torch_distributed_process_group
 from vllm.distributed.parallel_state import get_dp_group
 from vllm.engine.arg_utils import EngineArgs
@@ -349,8 +350,13 @@ class LLMEngine:
         """
         self.engine_core.reset_encoder_cache()
 
-    def sleep(self, level: int = 1, mode: PauseMode = "abort"):
-        self.engine_core.sleep(level, mode)
+    def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ):
+        self.engine_core.sleep(level, storage_tier, mode)
 
         if self.logger_manager is not None:
             self.logger_manager.record_sleep_state(1, level)

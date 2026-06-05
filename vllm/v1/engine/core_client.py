@@ -43,6 +43,7 @@ from vllm.v1.engine import (
     ReconfigureRankType,
     UtilityOutput,
 )
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.v1.engine.coordinator import DPCoordinator
 from vllm.v1.engine.core import EngineCore, EngineCoreProc
 from vllm.v1.engine.exceptions import EngineDeadError
@@ -155,7 +156,12 @@ class EngineCoreClient(ABC):
     def reset_encoder_cache(self) -> None:
         raise NotImplementedError
 
-    def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
+    def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None:
         raise NotImplementedError
 
     def wake_up(self, tags: list[str] | None = None) -> None:
@@ -232,7 +238,12 @@ class EngineCoreClient(ABC):
     async def reset_encoder_cache_async(self) -> None:
         raise NotImplementedError
 
-    async def sleep_async(self, level: int = 1, mode: PauseMode = "abort") -> None:
+    async def sleep_async(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None:
         raise NotImplementedError
 
     async def wake_up_async(self, tags: list[str] | None = None) -> None:
@@ -319,10 +330,15 @@ class InprocClient(EngineCoreClient):
     def reset_encoder_cache(self) -> None:
         self.engine_core.reset_encoder_cache()
 
-    def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
+    def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None:
         if mode == "wait":
             raise ValueError("'wait' pause mode is not supported in inproc-engine mode")
-        result = self.engine_core.sleep(level, mode)
+        result = self.engine_core.sleep(level, storage_tier, mode)
         assert result is None
 
     def wake_up(self, tags: list[str] | None = None) -> None:
@@ -857,8 +873,13 @@ class SyncMPClient(MPClient):
     def pin_lora(self, lora_id: int) -> bool:
         return self.call_utility("pin_lora", lora_id)
 
-    def sleep(self, level: int = 1, mode: PauseMode = "abort") -> None:
-        self.call_utility("sleep", level, mode)
+    def sleep(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None:
+        self.call_utility("sleep", level, storage_tier, mode)
 
     def wake_up(self, tags: list[str] | None = None) -> None:
         self.call_utility("wake_up", tags)
@@ -1093,8 +1114,13 @@ class AsyncMPClient(MPClient):
     async def reset_encoder_cache_async(self) -> None:
         await self.call_utility_async("reset_encoder_cache")
 
-    async def sleep_async(self, level: int = 1, mode: PauseMode = "abort") -> None:
-        await self.call_utility_async("sleep", level, mode)
+    async def sleep_async(
+        self,
+        level: int = 1,
+        storage_tier: StorageTierName = "ram",
+        mode: PauseMode = "abort",
+    ) -> None:
+        await self.call_utility_async("sleep", level, storage_tier, mode)
 
     async def wake_up_async(self, tags: list[str] | None = None) -> None:
         await self.call_utility_async("wake_up", tags)

@@ -22,6 +22,7 @@ from vllm.v1.engine import EngineCoreRequest
 from vllm.v1.engine.input_processor import InputProcessor
 
 if TYPE_CHECKING:
+    from vllm.device_allocator.storage_tiers.base import StorageTierName
     from vllm.v1.engine import PauseMode
 
 
@@ -147,7 +148,12 @@ class EngineClient(ABC):
         ...
 
     @abstractmethod
-    async def sleep(self, level: int = 1, mode: "PauseMode" = "abort") -> None:
+    async def sleep(
+        self,
+        level: int = 1,
+        storage_tier: "StorageTierName" = "ram",
+        mode: "PauseMode" = "abort",
+    ) -> None:
         """Sleep the engine"""
         ...
 

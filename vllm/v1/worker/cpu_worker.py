@@ -19,6 +19,7 @@ from vllm.utils.cpu_resource_utils import (
 )
 from vllm.utils.mem_utils import format_gib
 from vllm.utils.torch_utils import set_random_seed
+from vllm.device_allocator.storage_tiers.base import StorageTierName
 from vllm.v1.worker.cpu_model_runner import CPUModelRunner
 from vllm.v1.worker.gpu_worker import Worker, init_worker_distributed_environment
 from vllm.v1.worker.worker_base import CompilationTimes
@@ -142,7 +143,7 @@ class CPUWorker(Worker):
             self.vllm_config, torch.device("cpu")
         )
 
-    def sleep(self, level: int = 1) -> None:
+    def sleep(self, level: int = 1, storage_tier: StorageTierName = "ram") -> None:
         logger.warning("sleep mode is not supported on CPU, ignore it.")
         pass
 
